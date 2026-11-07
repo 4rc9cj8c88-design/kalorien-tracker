@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Kalorien">
+<meta name="theme-color" content="#f4f5f2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111311" media="(prefers-color-scheme: dark)">
+<title>Kalorien-Tracker</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <button class="icon-btn" id="prevDay" aria-label="Vorheriger Tag">‹</button>
+  <label class="date-wrap"><span class="date-btn" id="dateLabel">Heute</span><input type="date" id="datePicker" aria-label="Datum wählen"></label>
+  <button class="icon-btn" id="nextDay" aria-label="Nächster Tag">›</button>
+</header>
+
+<main id="view"></main>
+
+<nav class="tabbar">
+  <button data-tab="tag" class="active"><span>●</span>Tag</button>
+  <button data-tab="rezepte"><span>◫</span>Rezepte</button>
+  <button class="add-fab" id="fab" aria-label="Hinzufügen">+</button>
+  <button data-tab="woche"><span>▤</span>Woche</button>
+  <button data-tab="einstellungen"><span>⚙︎</span>Mehr</button>
+</nav>
+
+<div id="sheets"></div>
+<div id="toast" role="status"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
