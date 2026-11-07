@@ -1,6 +1,6 @@
 // Kalorien-Tracker – läuft komplett im Browser, Daten bleiben auf dem Gerät.
 import { VORLAGEN, CUSTOM } from './vorlagen.js';
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const FV_GOAL = 650; // DGE: 400 g Gemüse + 250 g Obst pro Tag
 const STORE_KEY = 'kt.v1';
 const BARCODE_LIB = 'https://cdn.jsdelivr.net/npm/barcode-detector@3.2.2/dist/es/ponyfill.js/+esm';
@@ -433,6 +433,8 @@ function tplRecipe(t) {
 function viewSettings() {
   const s = state.settings;
   return `<section class="card"><h2>Tagesziele</h2>
+    <button class="btn primary block" id="calcGoals" style="margin-bottom:12px">Aus Körperdaten berechnen</button>
+    ${s.profile ? `<p class="small muted" style="margin:0 0 10px">Berechnet für ${fmt(s.profile.weight)} kg · ${GOALS.find((g) => g.id === s.profile.goal)?.label || ''}</p>` : ''}
     <div class="grid2">
       <label class="field"><span>Kalorien (kcal)</span><input class="input num" inputmode="numeric" data-set="kcal" value="${s.kcal}"></label>
       <label class="field"><span>Eiweiß (g)</span><input class="input num" inputmode="numeric" data-set="protein" value="${s.protein}"></label>
@@ -463,6 +465,69 @@ function viewSettings() {
     Markenprodukte: Open Food Facts (openfoodfacts.org), Lizenz ODbL.<br><br>Version ${VERSION}</section>`;
 }
 
+/* ---------- Ziel-Rechner ---------- */
+const ACTIVITY = [
+  { f: 1.2, label: 'Kaum Bewegung, kein Sport' },
+  { f: 1.375, label: 'Bürojob + 1–3× Sport pro Woche' },
+  { f: 1.55, label: 'Bürojob + 4–5× Sport pro Woche' },
+  { f: 1.725, label: 'Körperlicher Job oder 6–7× Sport' },
+];
+const GOALS = [
+  { id: 'cut', label: 'Abnehmen', kcal: -500 },
+  { id: 'keep', label: 'Gewicht halten', kcal: 0 },
+  { id: 'lean', label: 'Muskelaufbau, Lean Bulk', kcal: 250 },
+  { id: 'bulk', label: 'Zunehmen, schneller', kcal: 500 },
+];
+// Mifflin-St Jeor × Aktivität + Zielzuschlag; Eiweiß g/kg, Fett 1 g/kg, Rest Kohlenhydrate
+function goalsFrom(p) {
+  const bmr = 10 * p.weight + 6.25 * p.height - 5 * p.age + (p.sex === 'm' ? 5 : -161);
+  const tdee = bmr * p.activity;
+  const kcal = Math.round((tdee + (GOALS.find((g) => g.id === p.goal)?.kcal || 0)) / 50) * 50;
+  const protein = Math.ceil((p.weight * p.proteinPerKg) / 5) * 5;
+  const fat = Math.round((p.weight * (p.goal === 'cut' ? 0.8 : 1)) / 5) * 5;
+  const carbs = Math.max(0, Math.round((kcal - protein * 4 - fat * 9) / 4 / 5) * 5);
+  return { bmr, tdee, kcal, protein, fat, carbs };
+}
+function openGoalCalc() {
+  const p = { sex: 'm', age: '', height: '', weight: '', activity: 1.55, goal: 'lean', proteinPerKg: 2, ...(state.settings.profile || {}) };
+  const body = `
+    <div class="seg" id="gSex"><button data-sex="m" class="${p.sex === 'm' ? 'on' : ''}">Männlich</button><button data-sex="w" class="${p.sex === 'w' ? 'on' : ''}">Weiblich</button></div>
+    <div class="grid2">
+      <label class="field"><span>Alter</span><input class="input num" id="gAge" inputmode="numeric" value="${p.age}"></label>
+      <label class="field"><span>Größe (cm)</span><input class="input num" id="gHeight" inputmode="numeric" value="${p.height}"></label>
+      <label class="field"><span>Gewicht (kg)</span><input class="input num" id="gWeight" inputmode="decimal" value="${p.weight ? fmtIn(p.weight) : ''}"></label>
+      <label class="field"><span>Eiweiß (g pro kg)</span><input class="input num" id="gProt" inputmode="decimal" value="${fmtIn(p.proteinPerKg)}"></label>
+    </div>
+    <label class="field"><span>Alltag & Training</span><select class="input" id="gAct">${ACTIVITY.map((a) => `<option value="${a.f}" ${a.f === p.activity ? 'selected' : ''}>${a.label}</option>`).join('')}</select></label>
+    <label class="field"><span>Ziel</span><select class="input" id="gGoal">${GOALS.map((g) => `<option value="${g.id}" ${g.id === p.goal ? 'selected' : ''}>${g.label} (${g.kcal > 0 ? '+' : ''}${g.kcal} kcal)</option>`).join('')}</select></label>
+    <div class="card" id="gOut"></div>
+    <p class="small muted">Startwert nach Mifflin-St Jeor. Ob er passt, zeigt die Waage nach 2–3 Wochen – dann um 100–200 kcal anpassen. Deine Angaben bleiben auf diesem Gerät.</p>`;
+  const el = pushSheet({ title: 'Ziele berechnen', right: { label: 'Übernehmen', onClick: () => apply() }, body, mount: () => {} });
+  const read = () => ({ sex: p.sex, age: num($('#gAge', el).value), height: num($('#gHeight', el).value), weight: num($('#gWeight', el).value),
+    activity: Number($('#gAct', el).value), goal: $('#gGoal', el).value, proteinPerKg: num($('#gProt', el).value) || 2 });
+  const ok = (q) => q.age > 0 && q.height > 0 && q.weight > 0;
+  function upd() {
+    const q = read();
+    if (!ok(q)) { $('#gOut', el).innerHTML = '<p class="small muted" style="margin:0">Alter, Größe und Gewicht eingeben.</p>'; return; }
+    const g = goalsFrom(q);
+    $('#gOut', el).innerHTML = `<table class="nut-table">
+      <tr><td>Grundumsatz</td><td class="num">${fmt(g.bmr)} kcal</td></tr>
+      <tr><td>Verbrauch am Tag</td><td class="num">${fmt(g.tdee)} kcal</td></tr>
+      <tr><td><b>Ziel</b></td><td class="num"><b>${fmt(g.kcal)} kcal</b></td></tr>
+      <tr><td>Eiweiß / Fett / KH</td><td class="num">${fmt(g.protein)} / ${fmt(g.fat)} / ${fmt(g.carbs)} g</td></tr></table>`;
+  }
+  function apply() {
+    const q = read();
+    if (!ok(q)) return toast('Bitte Alter, Größe und Gewicht eingeben');
+    const g = goalsFrom(q);
+    Object.assign(state.settings, { kcal: g.kcal, protein: g.protein, fat: g.fat, carbs: g.carbs, profile: q });
+    save(); popSheet(); render(); toast('Ziele übernommen');
+  }
+  $$('[data-sex]', el).forEach((b) => b.onclick = () => { p.sex = b.dataset.sex; $$('[data-sex]', el).forEach((x) => x.classList.toggle('on', x === b)); upd(); });
+  $$('input, select', el).forEach((i) => { i.oninput = upd; i.onchange = upd; });
+  upd();
+}
+
 function bindView(v) {
   $$('[data-add]', v).forEach((b) => b.onclick = () => openAdd({ mode: 'log', meal: b.dataset.add }));
   $$('[data-entry]', v).forEach((b) => b.onclick = () => {
@@ -486,6 +551,8 @@ function bindView(v) {
     if (!name || !tare) return toast('Name und Gewicht eingeben');
     state.pots.push({ id: uid(), name, tare }); save(); render();
   };
+  const cg = $('#calcGoals', v);
+  if (cg) cg.onclick = openGoalCalc;
   const ex = $('#exportBtn', v);
   if (ex) ex.onclick = exportData;
   const im = $('#importBtn', v);
