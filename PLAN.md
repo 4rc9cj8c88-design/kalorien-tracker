@@ -10,6 +10,7 @@ Web-App fürs iPhone (Safari, zum Home-Bildschirm hinzufügen). Daten bleiben lo
 - [x] Claude-SDK lädt im Browser (Aufruf mit echtem Key noch nicht getestet)
 - [x] Online: https://4rc9cj8c88-design.github.io/kalorien-tracker/ (öffentliches Repo, nur Code)
 - [x] v1.1.0: 14 Rezeptvorlagen (`vorlagen.js`: Hähnchen, Hack, Shakes) mit geschätztem Kochgewicht und Portionen; Obst-&-Gemüse-Zähler (Ziel 650 g, BLS-Gruppen F/G/H7/K7/R161)
+- [x] v1.2.0: Einheiten im Mengen-Dialog (g, ml, Stück, Portion, Packung, Anteil vom Topf, EL, TL; Stückgewichte merkbar), „Gekocht“-Knopf: Zutaten einzeln scannen/suchen, dann Anteil oder Gramm eintragen, optional als Rezept speichern
 - [ ] Test auf echtem iPhone (Kamera-Scan, Foto)
 - [ ] Idee: Gewichts-Tracking mit Wochenschnitt und kcal-Anpassung im Bulk
 

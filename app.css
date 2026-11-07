@@ -171,7 +171,7 @@ main { padding: 4px 16px 24px; max-width: 640px; margin: 0 auto; }
 /* Suche */
 .search-wrap { display: flex; gap: 8px; margin-bottom: 10px; }
 .search-wrap .input { flex: 1; }
-.quick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+.quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }
 .quick button { border: 0; background: var(--card); border-radius: 12px; padding: 12px 6px; font-size: 13px; font-weight: 600; display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .quick button b { font-size: 22px; font-weight: 400; }
 .list { background: var(--card); border-radius: var(--radius); padding: 0 14px; margin-bottom: 14px; }
@@ -223,3 +223,6 @@ main { padding: 4px 16px 24px; max-width: 640px; margin: 0 auto; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .photo-prev { width: 100%; max-height: 240px; object-fit: cover; border-radius: var(--radius); margin-bottom: 12px; }
 a { color: var(--accent); }
+
+.chips.units { margin: 4px 0 6px; }
+.chips.units .chip { padding: 5px 11px; font-size: 13px; }

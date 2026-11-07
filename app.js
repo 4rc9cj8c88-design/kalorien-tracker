@@ -1,6 +1,6 @@
 // Kalorien-Tracker – läuft komplett im Browser, Daten bleiben auf dem Gerät.
 import { VORLAGEN, CUSTOM } from './vorlagen.js';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const FV_GOAL = 650; // DGE: 400 g Gemüse + 250 g Obst pro Tag
 const STORE_KEY = 'kt.v1';
 const BARCODE_LIB = 'https://cdn.jsdelivr.net/npm/barcode-detector@3.2.2/dist/es/ponyfill.js/+esm';
@@ -33,6 +33,8 @@ const defaults = () => ({
   recipes: [],
   recent: [],        // zuletzt benutzte Lebensmittel (Snapshots)
   lastGrams: {},     // key -> zuletzt gegessene Menge
+  lastUnit: {},      // key -> { u, q } zuletzt benutzte Einheit
+  pieceW: {},        // key -> Gramm pro Stück (vom Nutzer)
   pots: [],          // { id, name, tare }
 });
 let state = load();
@@ -237,14 +239,61 @@ function srcLabel(f) {
   return { bls: 'BLS', off: 'Open Food Facts', own: 'Eigenes', recipe: 'Rezept', est: 'Geschätzt' }[f.src] || f.src;
 }
 
+/* ---------- Einheiten ---------- */
+// Gramm pro ml nach BLS-Gruppe (Öle leichter, Honig schwerer als Wasser)
+function density(f) {
+  const c = f.code || '';
+  if (/^Q/.test(c)) return 0.92;
+  if (/^M1/.test(c)) return 1.03;
+  if (/^S12/.test(c)) return 1.4;
+  return 1;
+}
+// Typische Stückgewichte (essbarer Anteil), Schlüssel = erste 5 Zeichen des BLS-Codes
+const PIECE = {
+  E1111: 60, F5031: 120, F1101: 150, F1201: 140, F6011: 80, F5161: 300, B7830: 62, K1101: 100, K1201: 100,
+  K4201: 250, G4801: 80, G4901: 4, G5611: 80, G5431: 160, G5411: 160, G5421: 160, G6201: 80, G5201: 400,
+  G5821: 250, G3121: 400, K7011: 20,
+};
+const pieceWeight = (f) => state.pieceW[f.key] || (f.code && PIECE[f.code.slice(0, 5)]) || null;
+function unitsFor(f) {
+  const d = density(f);
+  const u = [{ id: 'g', label: 'g', g: 1 }, { id: 'ml', label: 'ml', g: d }, { id: 'stk', label: 'Stück', g: pieceWeight(f) }];
+  if (f.serving) u.push({ id: 'port', label: 'Portion', g: f.serving });
+  if (f.pkg) u.push({ id: 'pack', label: 'Packung', g: f.pkg });
+  if (f.src === 'recipe' && f.weight) u.push({ id: 'anteil', label: 'Anteil vom Topf', g: f.weight });
+  u.push({ id: 'el', label: 'EL', g: 15 * d }, { id: 'tl', label: 'TL', g: 5 * d });
+  return u;
+}
+// "1/3", "1 1/2", "½", "0,5" -> Zahl
+const FRAC = { '½': '1/2', '⅓': '1/3', '⅔': '2/3', '¼': '1/4', '¾': '3/4', '⅕': '1/5' };
+function qtyNum(v) {
+  let t = String(v ?? '').trim().replace(/[½⅓⅔¼¾⅕]/g, (c) => ' ' + FRAC[c]).trim().replace(',', '.');
+  let m = t.match(/^(\d+)\s+(\d+)\/(\d+)$/);
+  if (m) return Number(m[1]) + Number(m[2]) / Number(m[3]);
+  m = t.match(/^(\d*\.?\d+)\s*\/\s*(\d*\.?\d+)$/);
+  if (m) return Number(m[2]) ? Number(m[1]) / Number(m[2]) : null;
+  return num(t);
+}
+function qtyLabel(q) {
+  for (const [sym, fr] of Object.entries(FRAC)) { const [a, b] = fr.split('/'); if (Math.abs(q - a / b) < 0.002) return sym; }
+  return fmt(q, 2);
+}
+const UNIT_TXT = { ml: 'ml', stk: 'Stück', port: 'Portion', pack: 'Packung', anteil: 'vom Topf', el: 'EL', tl: 'TL' };
+// "2 Stück · 120 g" oder "120 g"
+function amountText(x) {
+  if (!x.u || x.u === 'g' || !x.q) return `${fmt(x.grams)} g`;
+  return `${qtyLabel(x.q)} ${UNIT_TXT[x.u] || x.u} · ${fmt(x.grams)} g`;
+}
+
 function remember(food, grams) {
   const snap = { key: food.key, src: food.src, code: food.code, fv: food.fv, ean: food.ean, recipeId: food.recipeId, name: food.name, brand: food.brand, per100: food.per100, serving: food.serving, pkg: food.pkg };
   state.recent = [snap, ...state.recent.filter((f) => f.key !== food.key)].slice(0, 40);
   if (grams) state.lastGrams[food.key] = grams;
 }
-function logFood(food, grams, meal, est = false) {
+function logFood(food, grams, meal, est = false, uq = null) {
   const day = (state.days[currentDate] ||= []);
-  day.push({ id: uid(), key: food.key, src: food.src, code: food.code, ean: food.ean, recipeId: food.recipeId, name: food.name, brand: food.brand, per100: { ...food.per100 }, fv: fvOf(food), grams, meal, est, t: Date.now() });
+  day.push({ id: uid(), key: food.key, src: food.src, code: food.code, ean: food.ean, recipeId: food.recipeId, name: food.name, brand: food.brand, per100: { ...food.per100 }, fv: fvOf(food),
+    serving: food.serving, pkg: food.pkg, weight: food.weight, grams, meal, est, ...(uq && uq.u !== 'g' ? uq : {}), t: Date.now() });
   if (!est) remember(food, grams);
   save();
 }
@@ -313,7 +362,7 @@ function entryRow(e) {
   const k = calc(e.per100, e.grams).kcal;
   return `<button class="entry" data-entry="${e.id}">
     <div class="grow"><div class="name">${esc(e.name)}</div>
-    <div class="sub num">${fmt(e.grams)} g${e.brand ? ' · ' + esc(e.brand) : ''} ${e.est ? '<span class="badge est">geschätzt</span>' : ''}</div></div>
+    <div class="sub num">${amountText(e)}${e.brand ? ' · ' + esc(e.brand) : ''} ${e.est ? '<span class="badge est">geschätzt</span>' : ''}</div></div>
     <div class="kcal num">${fmt(k)} kcal</div></button>`;
 }
 
@@ -501,6 +550,7 @@ function openAdd(target) {
     ${isPick ? '' : `<div class="quick">
       <button id="qScan"><b>▥</b>Barcode</button>
       <button id="qPhoto"><b>◉</b>Foto</button>
+      <button id="qCook"><b>♨</b>Gekocht</button>
       <button id="qOwn"><b>✎</b>Eigenes</button>
     </div>`}
     ${isPick ? `<div class="quick" style="grid-template-columns:1fr 1fr"><button id="qScan"><b>▥</b>Barcode</button><button id="qOwn"><b>✎</b>Eigenes</button></div>` : ''}
@@ -518,6 +568,8 @@ function openAdd(target) {
       $('#qOwn', el).onclick = () => openProductForm({}, target);
       const ph = $('#qPhoto', el);
       if (ph) ph.onclick = () => openPhoto('meal', target);
+      const ck = $('#qCook', el);
+      if (ck) ck.onclick = () => openRecipe(null, { quick: true, meal: target.meal });
       run();
       loadBLS().then(() => { if (q.value) run(); }).catch(() => toast('Lebensmittel-Datenbank konnte nicht geladen werden'));
     },
@@ -593,34 +645,50 @@ function openAmount(food, target) {
   const editing = target.mode === 'edit';
   const isPick = target.mode === 'pick';
   let meal = editing ? target.entry.meal : (target.meal || defaultMeal());
-  const startGrams = editing ? target.entry.grams : (target.grams || state.lastGrams[f.key] || f.serving || 100);
 
-  const quick = () => {
-    const opts = [];
-    const last = state.lastGrams[f.key];
-    if (last) opts.push([last, `${fmt(last)} g (zuletzt)`]);
-    if (f.serving) opts.push([f.serving, `${fmt(f.serving)} g (Portion)`]);
-    if (f.pkg) opts.push([f.pkg, `${fmt(f.pkg)} g (Packung)`]);
-    if (f.src === 'recipe' && f.weight) opts.push([f.weight, `Alles (${fmt(f.weight)} g)`]);
-    for (const g of [50, 100, 150, 200, 250]) if (!opts.some((o) => o[0] === g)) opts.push([g, `${g} g`]);
-    return opts.slice(0, 8);
+  // Start-Einheit und -Menge
+  let unit = 'g', qtyStr;
+  const has = (id) => unitsFor(f).some((x) => x.id === id);
+  const src = editing ? target.entry : target.unit ? { u: target.unit, q: target.q } : target.grams ? { u: target.u, q: target.q, grams: target.grams } : state.lastUnit[f.key];
+  if (src?.u && src.u !== 'g' && src.q && has(src.u)) { unit = src.u; qtyStr = src.u === 'anteil' ? qtyLabel(src.q) : fmtIn(src.q, 2); }
+  else if (!editing && !target.grams && !state.lastGrams[f.key] && f.src === 'recipe' && f.serving) { unit = 'port'; qtyStr = '1'; }
+  else qtyStr = fmtIn(editing ? target.entry.grams : (target.grams || state.lastGrams[f.key] || f.serving || 100));
+
+  const unitObj = () => unitsFor(f).find((x) => x.id === unit) || { id: 'g', g: 1 };
+  const chips = () => {
+    if (unit === 'g') {
+      const opts = [];
+      const last = state.lastGrams[f.key];
+      if (last) opts.push([fmtIn(last), `${fmt(last)} g (zuletzt)`]);
+      for (const g of [50, 100, 150, 200, 250]) if (!opts.some((o) => o[0] === String(g))) opts.push([String(g), `${g} g`]);
+      return opts.slice(0, 6);
+    }
+    if (unit === 'ml') return [100, 200, 250, 330, 500].map((x) => [String(x), `${x} ml`]);
+    if (unit === 'anteil') return [['1', 'Alles'], ['1/2', '½'], ['1/3', '⅓'], ['1/4', '¼'], ['1/5', '⅕'], ['2/3', '⅔']];
+    if (unit === 'port' || unit === 'pack') return [['1/2', '½'], ['1', '1'], ['2', '2']];
+    return [1, 2, 3, 4].map((x) => [String(x), String(x)]);
   };
 
   const body = () => {
     const pl = f.src === 'off' || f.src === 'own' ? plausibility(f.per100) : null;
     const variants = f.src === 'bls' ? blsVariants(f.code) : [];
+    const rec = f.src === 'recipe' ? state.recipes.find((x) => x.id === f.recipeId) : null;
+    const u = unitObj();
     return `
     <div class="row" style="margin-bottom:6px"><span class="badge">${srcLabel(f)}</span>${f.brand ? `<span class="small muted">${esc(f.brand)}</span>` : ''}${target.entry?.est ? '<span class="badge est">geschätzt</span>' : ''}</div>
     ${pl && pl.level === 'warn' ? `<div class="note warn">⚠︎ ${esc(pl.text)} <button class="btn" style="margin-top:8px;padding:6px 10px" id="fixBtn">Werte korrigieren</button></div>` : ''}
     ${variants.length > 1 ? `<label class="field"><span>So habe ich es gewogen</span><select class="input" id="variant">
       ${variants.map((v) => `<option value="${v.code}" ${v.code === f.code ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>` : ''}
-    ${f.src === 'recipe' ? `<div class="note">Rezept: ${fmt(f.weight)} g ${(() => { const rc = state.recipes.find((r) => r.id === f.recipeId); return rc?.cooked ? (rc.estCooked ? 'gekocht (geschätzt)' : 'gekocht') : 'roh'; })()} insgesamt. Wiege nur deine Portion. <button class="btn" style="margin-top:8px;padding:6px 10px" id="editRecipe">Kochgewicht ändern</button></div>` : ''}
-    <div class="amount-big"><input id="grams" class="num" inputmode="decimal" value="${fmtIn(startGrams)}" aria-label="Menge in Gramm"><span>g</span></div>
-    <div class="chips" style="justify-content:center">${quick().map(([g, l]) => `<button class="chip" data-g="${g}">${l}</button>`).join('')}</div>
+    ${f.src === 'recipe' && f.weight ? `<div class="note">Im Topf: ${fmt(f.weight)} g ${rec?.cooked ? (rec.estCooked ? 'gekocht (geschätzt)' : 'gekocht') : 'roh gerechnet'}. ${rec?.cooked || (!rec && f.weight !== f.raw) ? 'Gib an, wie viel du gegessen hast – als Anteil (z. B. ⅓), in Portionen oder in Gramm vom fertigen Essen.' : 'Ohne Kochgewicht stimmt nur der Anteil (z. B. ⅓) – Gramm vom fertigen Essen nur, wenn du den Topf gewogen hast.'}${rec ? ' <button class="btn" style="margin-top:8px;padding:6px 10px" id="editRecipe">Rezept/Kochgewicht ändern</button>' : ''}</div>` : ''}
+    <div class="chips units" style="justify-content:center">${unitsFor(f).map((x) => `<button class="chip ${x.id === unit ? 'on' : ''}" data-unit="${x.id}">${x.label}</button>`).join('')}</div>
+    <div class="amount-big"><input id="qty" class="num" inputmode="${unit === 'anteil' ? 'text' : 'decimal'}" value="${esc(qtyStr)}" aria-label="Menge"><span>${esc(unit === 'g' ? 'g' : UNIT_TXT[unit])}</span></div>
+    ${unit === 'stk' ? `<div class="row" style="justify-content:center;margin-bottom:6px"><span class="small muted">1 Stück wiegt</span><input class="input num" id="pieceW" inputmode="decimal" style="width:80px" value="${u.g ? fmtIn(u.g) : ''}" placeholder="g"><span class="small muted">g</span></div>` : ''}
+    <div class="small muted" id="gramsInfo" style="text-align:center"></div>
+    <div class="chips" style="justify-content:center">${chips().map(([q, l]) => `<button class="chip" data-q="${q}">${l}</button>`).join('')}</div>
     <div class="preview" id="preview"></div>
     ${isPick ? '' : `<div class="seg" id="mealSeg">${MEALS.map((m) => `<button data-meal="${m.id}" class="${m.id === meal ? 'on' : ''}">${m.label.replace('essen', '')}</button>`).join('')}</div>`}
     <details><summary class="small muted">Nährwerte pro 100 g</summary>
-      <table class="nut-table">${NUTS.map(([k, l, u]) => `<tr><td>${l.trim()}</td><td class="num">${f.per100[k] == null ? '–' : fmt(f.per100[k], 1) + ' ' + u}</td></tr>`).join('')}</table>
+      <table class="nut-table">${NUTS.map(([k, l, uu]) => `<tr><td>${l.trim()}</td><td class="num">${f.per100[k] == null ? '–' : fmt(f.per100[k], 1) + ' ' + uu}</td></tr>`).join('')}</table>
       ${f.src === 'off' || f.src === 'own' ? '<button class="btn block" style="margin-top:10px" id="fixBtn2">Werte bearbeiten</button>' : ''}
     </details>
     ${editing ? '<button class="btn danger block" style="margin-top:16px" id="delBtn">Eintrag löschen</button>' : ''}`;
@@ -634,28 +702,41 @@ function openAmount(food, target) {
     mount: (sheetEl) => { el = sheetEl; bind(sheetEl); },
   });
 
-  function grams() { return num($('#grams', el).value) || 0; }
+  function perUnit() {
+    if (unit === 'stk') return num($('#pieceW', el)?.value) || 0;
+    return unitObj().g || 0;
+  }
+  function qty() { return qtyNum($('#qty', el).value) || 0; }
+  function grams() { return unit === 'g' ? qty() : qty() * perUnit(); }
   function updatePreview() {
-    const n = calc(f.per100, grams());
+    const gr = grams();
+    const n = calc(f.per100, gr);
+    $('#gramsInfo', el).textContent = unit === 'g' ? '' : unit === 'stk' && !perUnit() ? 'Gewicht pro Stück eingeben (einmal wiegen, wird gemerkt)' : `= ${fmt(gr)} g`;
     $('#preview', el).innerHTML = `<div><b class="num">${fmt(n.kcal)}</b><small>kcal</small></div><div><b class="num">${fmt(n.protein, 1)}</b><small>Eiweiß</small></div><div><b class="num">${fmt(n.fat, 1)}</b><small>Fett</small></div><div><b class="num">${fmt(n.carbs, 1)}</b><small>KH</small></div>`;
   }
+  function rerender() {
+    $('.sheet-head h1', el).textContent = f.name;
+    $('.inner', el).innerHTML = body();
+    bind(el);
+  }
   function bind(el) {
-    const g = $('#grams', el);
-    g.oninput = updatePreview;
-    g.onfocus = () => g.select();
-    $$('[data-g]', el).forEach((b) => b.onclick = () => { g.value = fmtIn(Number(b.dataset.g)); updatePreview(); });
+    const q = $('#qty', el);
+    q.oninput = () => { qtyStr = q.value; updatePreview(); };
+    q.onfocus = () => q.select();
+    $$('[data-q]', el).forEach((b) => b.onclick = () => { q.value = qtyStr = unit === 'anteil' ? qtyLabel(qtyNum(b.dataset.q)) : b.dataset.q; updatePreview(); });
+    $$('[data-unit]', el).forEach((b) => b.onclick = () => {
+      const gr = grams();
+      unit = b.dataset.unit;
+      // Menge umrechnen, damit die Grammzahl gleich bleibt
+      const pu = unit === 'g' ? 1 : unitObj().g;
+      qtyStr = gr && pu ? (unit === 'anteil' ? qtyLabel(gr / pu) : fmtIn(gr / pu, unit === 'g' || unit === 'ml' ? 0 : 2)) : (unit === 'g' ? '100' : '1');
+      rerender();
+    });
+    const pw = $('#pieceW', el);
+    if (pw) pw.oninput = updatePreview;
     $$('[data-meal]', el).forEach((b) => b.onclick = () => { meal = b.dataset.meal; $$('[data-meal]', el).forEach((x) => x.classList.toggle('on', x === b)); });
     const v = $('#variant', el);
-    if (v) v.onchange = () => {
-      const nf = bls.byCode.get(v.value);
-      const keepGrams = grams();
-      f = blsFood(nf);
-      $('.sheet-head h1', el).textContent = f.name;
-      $('.inner', el).innerHTML = body();
-      bind(el);
-      $('#grams', el).value = fmtIn(keepGrams);
-      updatePreview();
-    };
+    if (v) v.onchange = () => { f = blsFood(bls.byCode.get(v.value)); if (!has(unit)) unit = 'g'; rerender(); };
     for (const id of ['#fixBtn', '#fixBtn2']) {
       const b = $(id, el);
       if (b) b.onclick = () => openProductForm(f, target, (nf) => { popSheet(); openAmount(nf, target); });
@@ -668,19 +749,24 @@ function openAmount(food, target) {
       save(); closeAllSheets(); render(); toast('Gelöscht');
     };
     updatePreview();
-    if (!editing) setTimeout(() => g.focus(), 50);
+    if (!editing) setTimeout(() => q.focus(), 50);
   }
   function submit() {
-    const gr = grams();
-    if (gr <= 0) return toast('Bitte eine Menge eingeben');
-    if (isPick) { target.onPick(f, gr); return; }
+    const gr = Math.round(grams() * 10) / 10;
+    if (gr <= 0) return toast(unit === 'stk' && !perUnit() ? 'Bitte das Gewicht pro Stück eingeben' : 'Bitte eine Menge eingeben');
+    if (unit === 'stk') state.pieceW[f.key] = perUnit();
+    const uq = { u: unit, q: unit === 'g' ? gr : qty() };
+    state.lastUnit[f.key] = uq;
+    if (isPick) { save(); target.onPick(f, gr, uq); return; }
     if (editing) {
       const e = target.entry;
       Object.assign(e, { grams: gr, meal, key: f.key, code: f.code, name: f.name, per100: { ...f.per100 } });
+      delete e.u; delete e.q;
+      if (unit !== 'g') Object.assign(e, uq);
       if (!e.est) remember(f, gr);
       save();
     } else {
-      logFood(f, gr, meal);
+      logFood(f, gr, meal, false, uq);
     }
     closeAllSheets();
     tab = 'tag';
@@ -1004,16 +1090,19 @@ function showMealResult(el, out, dataUrl, items, target) {
 }
 
 /* ---------- Rezepte ---------- */
-function openRecipe(recipe) {
+function openRecipe(recipe, opts = {}) {
   const r = recipe ? JSON.parse(JSON.stringify(recipe)) : { id: uid(), name: '', items: [], cooked: null };
   const isNew = !recipe || !state.recipes.some((x) => x.id === recipe.id);
+  const quick = !!opts.quick;
   const body = `
-    <label class="field"><span>Name</span><input class="input" id="rName" value="${esc(r.name)}" placeholder="z. B. Spaghetti Bolognese"></label>
+    ${quick ? '<p class="small muted" style="margin:0 0 12px">Scanne oder suche jede Zutat und gib an, wie viel du reingetan hast (g, ml, Stück, EL …). Danach sagst du, wie viel du davon gegessen hast – z. B. ⅓ vom Topf oder in Gramm.</p>' : ''}
+    <label class="field"><span>Name${quick ? ' (optional)' : ''}</span><input class="input" id="rName" value="${esc(r.name)}" placeholder="z. B. Spaghetti Bolognese"></label>
     ${r.note ? `<div class="note">${esc(r.note)}</div>` : ''}
     <div class="list-title">1 · Zutaten (roh gewogen)</div>
     <div id="rItems"></div>
     <button class="btn block" id="rAdd">+ Zutat hinzufügen</button>
-    <div class="list-title">2 · Nach dem Kochen wiegen</div>
+    <div class="list-title">2 · Nach dem Kochen wiegen${quick ? ' (optional)' : ''}</div>
+    ${quick ? '<p class="small muted" style="margin:0 0 8px">Nur nötig, wenn du deine Portion in Gramm wiegen willst. Für einen Anteil (½, ⅓ …) brauchst du es nicht.</p>' : ''}
     <div class="card" style="padding:12px">
       ${state.pots.length ? `<label class="field"><span>Topf</span><select class="input" id="rPot"><option value="">ohne Topf (direkt gewogen)</option>${state.pots.map((p) => `<option value="${p.id}">${esc(p.name)} (${fmt(p.tare)} g)</option>`).join('')}</select></label>` : '<p class="small muted" style="margin-top:0">Tipp: Unter „Mehr“ kannst du das Leergewicht deiner Töpfe speichern.</p>'}
       <label class="field"><span id="rGrossLbl">Gesamtgewicht gekocht (g)</span><input class="input num" id="rGross" inputmode="decimal" value="${r.cooked ? fmtIn(r.cooked) : ''}"></label>
@@ -1021,11 +1110,12 @@ function openRecipe(recipe) {
       <label class="field" style="margin-top:10px"><span>Portionen (optional)</span><input class="input num" id="rPortions" inputmode="numeric" value="${r.portions || ''}"></label>
     </div>
     <div class="card" id="rSum"></div>
+    ${quick ? `<label class="row" style="margin:4px 0 12px"><input type="checkbox" id="rKeep" checked> <span>Für später speichern (z. B. Reste morgen)</span></label>` : ''}
     ${isNew ? '' : '<button class="btn danger block" id="rDel">Rezept löschen</button>'}`;
 
   const el = pushSheet({
-    title: isNew ? (r.name || 'Neues Rezept') : r.name,
-    right: { label: 'Sichern', onClick: () => persist(true) },
+    title: quick ? 'Selbst gekocht' : isNew ? (r.name || 'Neues Rezept') : r.name,
+    right: quick ? { label: 'Weiter', onClick: () => quickNext() } : { label: 'Sichern', onClick: () => persist(true) },
     body,
     mount: () => {},
   });
@@ -1040,11 +1130,11 @@ function openRecipe(recipe) {
   function refresh() {
     r.cooked = cookedWeight();
     r.portions = num($('#rPortions', el).value) || null;
-    $('#rItems', el).innerHTML = r.items.length ? `<div class="list">${r.items.map((it, i) => `<button class="item" data-ri="${i}"><div class="grow"><div class="name">${esc(it.food.name)}</div><div class="sub num">${fmt(it.grams)} g · ${srcLabel(it.food)}</div></div><div class="num">${fmt(calc(it.food.per100, it.grams).kcal)} kcal</div></button>`).join('')}</div>` : '<p class="small muted">Noch keine Zutaten.</p>';
+    $('#rItems', el).innerHTML = r.items.length ? `<div class="list">${r.items.map((it, i) => `<button class="item" data-ri="${i}"><div class="grow"><div class="name">${esc(it.food.name)}</div><div class="sub num">${amountText(it)} · ${srcLabel(it.food)}</div></div><div class="num">${fmt(calc(it.food.per100, it.grams).kcal)} kcal</div></button>`).join('')}</div>` : '<p class="small muted">Noch keine Zutaten.</p>';
     $$('[data-ri]', el).forEach((b) => b.onclick = () => {
       const i = Number(b.dataset.ri);
       const it = r.items[i];
-      openAmount(it.food, { mode: 'pick', grams: it.grams, onPick: (f, g) => { r.items[i] = { food: f, grams: g }; popSheet(); refresh(); } });
+      openAmount(it.food, { mode: 'pick', grams: it.grams, u: it.u, q: it.q, onPick: (f, g, uq) => { r.items[i] = { food: itemFood(f), grams: g, ...uq }; popSheet(); refresh(); } });
     });
     const f = recipeFood(r);
     const potId = $('#rPot', el)?.value;
@@ -1055,7 +1145,7 @@ function openRecipe(recipe) {
       <tr><td>Pro 100 g ${r.cooked ? 'gekocht' : 'roh'}</td><td class="num"><b>${fmt(f.per100.kcal)} kcal</b></td></tr>
       <tr><td>Eiweiß / Fett / KH pro 100 g</td><td class="num">${fmt(f.per100.protein, 1)} / ${fmt(f.per100.fat, 1)} / ${fmt(f.per100.carbs, 1)} g</td></tr>
       ${f.serving ? `<tr><td>1 Portion (${fmt(f.serving)} g)</td><td class="num"><b>${fmt(calc(f.per100, f.serving).kcal)} kcal</b> · ${fmt(calc(f.per100, f.serving).protein)} g Eiweiß</td></tr>` : ''}</table>
-      ${r.items.length ? '<button class="btn primary block" style="margin-top:12px" id="rLog">Portion eintragen</button>' : ''}`;
+      ${r.items.length && !quick ? '<button class="btn primary block" style="margin-top:12px" id="rLog">Portion eintragen</button>' : ''}`;
     const lg = $('#rLog', el);
     if (lg) lg.onclick = () => { if (persist(false)) openAmount(recipeFood(r), { mode: 'log', meal: defaultMeal() }); };
   }
@@ -1071,7 +1161,17 @@ function openRecipe(recipe) {
     if (close) { popSheet(); render(); toast('Rezept gespeichert'); }
     return true;
   }
-  $('#rAdd', el).onclick = () => openAdd({ mode: 'pick', onPick: (f, g) => { r.items.push({ food: { key: f.key, src: f.src, code: f.code, fv: f.fv, ean: f.ean, name: f.name, brand: f.brand, per100: f.per100 }, grams: g }); popSheet(2); refresh(); } });
+  function itemFood(f) { return { key: f.key, src: f.src, code: f.code, fv: f.fv, ean: f.ean, name: f.name, brand: f.brand, per100: f.per100, serving: f.serving, pkg: f.pkg }; }
+  // Pick kann aus Suche (2 Ebenen) oder Scanner (3 Ebenen) kommen: bis zum Rezept-Sheet zurück
+  const backToRecipe = () => popSheet(sheetStack.length - 1 - sheetStack.findIndex((x) => x.el === el));
+  $('#rAdd', el).onclick = () => openAdd({ mode: 'pick', onPick: (f, g, uq) => { r.items.push({ food: itemFood(f), grams: g, ...uq }); backToRecipe(); refresh(); } });
+  function quickNext() {
+    if (!r.items.length) return toast('Bitte mindestens eine Zutat hinzufügen');
+    if (!$('#rName', el).value.trim()) $('#rName', el).value = 'Gekocht am ' + parseKey(currentDate).toLocaleDateString('de-DE', { day: 'numeric', month: 'numeric' });
+    if ($('#rKeep', el).checked) { if (!persist(false)) return; }
+    else { r.name = $('#rName', el).value.trim(); r.cooked = cookedWeight(); }
+    openAmount(recipeFood(r), { mode: 'log', meal: opts.meal || defaultMeal(), unit: 'anteil', q: 1 });
+  }
   $('#rGross', el).oninput = () => { r.estCooked = false; refresh(); };
   $('#rPortions', el).oninput = refresh;
   const pot = $('#rPot', el);
