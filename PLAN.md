@@ -8,12 +8,15 @@ Web-App fürs iPhone (Safari, zum Home-Bildschirm hinzufügen). Daten bleiben lo
   - Roh- und Gar-Varianten haben dieselben ersten 5 Zeichen im Code (z. B. C352000 Reis roh ↔ C352032 Reis gekocht)
 - [x] App v1.0.0 gebaut und im Browser (iPhone-14-Ansicht) getestet: Suche, Roh/Gar, Barcode→OFF, eigenes Produkt, Rezept/Topf, Woche, Einstellungen, Dark Mode
 - [x] Claude-SDK lädt im Browser (Aufruf mit echtem Key noch nicht getestet)
-- [ ] Hosting per HTTPS (GitHub Pages), Test auf echtem iPhone (Kamera-Scan, Foto)
+- [x] Online: https://4rc9cj8c88-design.github.io/kalorien-tracker/ (öffentliches Repo, nur Code)
+- [x] v1.1.0: 14 Rezeptvorlagen (`vorlagen.js`: Hähnchen, Hack, Shakes) mit geschätztem Kochgewicht und Portionen; Obst-&-Gemüse-Zähler (Ziel 650 g, BLS-Gruppen F/G/H7/K7/R161)
+- [ ] Test auf echtem iPhone (Kamera-Scan, Foto)
+- [ ] Idee: Gewichts-Tracking mit Wochenschnitt und kcal-Anpassung im Bulk
 
 Lokal testen: `cd ~/Desktop/Apps/kalorien-tracker && python3 -m http.server 8765` → http://localhost:8765 (Kamera nur über HTTPS bzw. localhost)
 
 ## Dateien
-index.html, app.css, app.js (ES-Modul), sw.js (offline), manifest.webmanifest, icon.png
+index.html, app.css, app.js (ES-Modul), vorlagen.js, sw.js (offline, Cache-Version bei Änderungen erhöhen), manifest.webmanifest, icon-*.png
 
 ## Funktionen
 1. **Tagesansicht:** kcal-Ziel, Summe, Protein/Fett/KH, Mahlzeiten (Frühstück/Mittag/Abend/Snacks), Datum wechseln. Keine Übergangsanimationen.

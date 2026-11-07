@@ -1,6 +1,6 @@
 // Offline-Cache: App-Dateien und Datenbank kommen aus dem Cache, Updates werden im Hintergrund geholt.
-const CACHE = 'kt-v1';
-const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'data/bls.json'];
+const CACHE = 'kt-v2';
+const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'vorlagen.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'data/bls.json'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

@@ -1,5 +1,7 @@
 // Kalorien-Tracker – läuft komplett im Browser, Daten bleiben auf dem Gerät.
-const VERSION = '1.0.0';
+import { VORLAGEN, CUSTOM } from './vorlagen.js';
+const VERSION = '1.1.0';
+const FV_GOAL = 650; // DGE: 400 g Gemüse + 250 g Obst pro Tag
 const STORE_KEY = 'kt.v1';
 const BARCODE_LIB = 'https://cdn.jsdelivr.net/npm/barcode-detector@3.2.2/dist/es/ponyfill.js/+esm';
 const ANTHROPIC_SDK = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.2.0/+esm';
@@ -91,6 +93,13 @@ function calc(per100, grams) {
   for (const [k] of NUTS) out[k] = (per100?.[k] || 0) * f;
   return out;
 }
+// BLS: F = Obst, G = Gemüse, H7 = Hülsenfrüchte, K7 = Pilze, R161 = passierte Tomaten
+const isFV = (code) => !!code && /^(F|G|H7|K7|R161)/.test(code);
+function fvOf(food) {
+  if (food.fv != null) return food.fv;
+  return isFV(food.code) ? 100 : 0;
+}
+function sumFV(entries) { return entries.reduce((a, e) => a + (fvOf(e) * (e.grams || 0)) / 100, 0); }
 function sumEntries(entries) {
   const t = { kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0, sugar: 0, salt: 0, satfat: 0 };
   for (const e of entries) {
@@ -210,16 +219,18 @@ function validEAN(code) {
 /* ---------- Lebensmittel auflösen ---------- */
 function recipeFood(r) {
   const t = { kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0, sugar: 0, salt: 0, satfat: 0 };
-  let raw = 0;
+  let raw = 0, fv = 0;
   for (const it of r.items) {
     const n = calc(it.food.per100, it.grams);
     for (const k in t) t[k] += n[k];
     raw += it.grams;
+    fv += (fvOf(it.food) * it.grams) / 100;
   }
   const weight = r.cooked || raw || 1;
   const per100 = {};
   for (const k in t) per100[k] = (t[k] / weight) * 100;
-  return { key: 'rec:' + r.id, src: 'recipe', recipeId: r.id, name: r.name, per100, total: t, raw, weight };
+  const serving = r.portions > 0 ? Math.round(weight / r.portions) : undefined;
+  return { key: 'rec:' + r.id, src: 'recipe', recipeId: r.id, name: r.name, per100, total: t, raw, weight, serving, fv: (fv / weight) * 100 };
 }
 function ownProductFor(ean) { return ean && state.products[ean] ? { ...state.products[ean] } : null; }
 function srcLabel(f) {
@@ -227,13 +238,13 @@ function srcLabel(f) {
 }
 
 function remember(food, grams) {
-  const snap = { key: food.key, src: food.src, code: food.code, ean: food.ean, recipeId: food.recipeId, name: food.name, brand: food.brand, per100: food.per100, serving: food.serving, pkg: food.pkg };
+  const snap = { key: food.key, src: food.src, code: food.code, fv: food.fv, ean: food.ean, recipeId: food.recipeId, name: food.name, brand: food.brand, per100: food.per100, serving: food.serving, pkg: food.pkg };
   state.recent = [snap, ...state.recent.filter((f) => f.key !== food.key)].slice(0, 40);
   if (grams) state.lastGrams[food.key] = grams;
 }
 function logFood(food, grams, meal, est = false) {
   const day = (state.days[currentDate] ||= []);
-  day.push({ id: uid(), key: food.key, src: food.src, code: food.code, ean: food.ean, recipeId: food.recipeId, name: food.name, brand: food.brand, per100: { ...food.per100 }, grams, meal, est, t: Date.now() });
+  day.push({ id: uid(), key: food.key, src: food.src, code: food.code, ean: food.ean, recipeId: food.recipeId, name: food.name, brand: food.brand, per100: { ...food.per100 }, fv: fvOf(food), grams, meal, est, t: Date.now() });
   if (!est) remember(food, grams);
   save();
 }
@@ -284,6 +295,7 @@ function viewTag() {
       ${macroBox('Fett', t.fat, s.fat, 'var(--f)')}
       ${macroBox('Kohlenhydrate', t.carbs, s.carbs, 'var(--c)')}
     </div>
+    <div class="macros" style="grid-template-columns:1fr">${macroBox('Obst & Gemüse', sumFV(entries), s.fvGoal || FV_GOAL, 'var(--accent)')}</div>
     <div class="small muted" style="margin-top:10px">Ballaststoffe ${fmt(t.fiber, 1)} g · Zucker ${fmt(t.sugar, 1)} g · Salz ${fmt(t.salt, 1)} g</div>
   </section>`;
   for (const m of MEALS) {
@@ -310,7 +322,8 @@ function viewWoche() {
   const days = [];
   for (let i = 6; i >= 0; i--) {
     const k = addDays(currentDate, -i);
-    days.push({ k, t: sumEntries(state.days[k] || []) });
+    const list = state.days[k] || [];
+    days.push({ k, t: { ...sumEntries(list), fv: sumFV(list) } });
   }
   const max = Math.max(s.kcal * 1.2, ...days.map((d) => d.t.kcal));
   const logged = days.filter((d) => d.t.kcal > 0);
@@ -325,6 +338,7 @@ function viewWoche() {
       <tr><td>Fett</td><td class="num">${fmt(avg('fat'))} g</td></tr>
       <tr><td>Kohlenhydrate</td><td class="num">${fmt(avg('carbs'))} g</td></tr>
       <tr><td>Ballaststoffe</td><td class="num">${fmt(avg('fiber'), 1)} g</td></tr>
+      <tr><td>Obst & Gemüse</td><td class="num">${fmt(avg('fv'))} g <span class="muted">/ ${fmt(s.fvGoal || FV_GOAL)} g</span></td></tr>
     </table></section>`;
 }
 
@@ -335,9 +349,36 @@ function viewRezepte() {
     ${state.recipes.length ? `<div class="list">${state.recipes.map((r) => {
       const f = recipeFood(r);
       return `<button class="item" data-recipe="${r.id}"><div class="grow"><div class="name">${esc(r.name)}</div>
-        <div class="sub num">${r.items.length} Zutaten · ${fmt(f.weight)} g ${r.cooked ? 'gekocht' : 'roh (Kochgewicht fehlt)'}</div></div>
+        <div class="sub num">${r.items.length} Zutaten · ${fmt(f.weight)} g ${r.cooked ? (r.estCooked ? 'gekocht (geschätzt)' : 'gekocht') : 'roh (Kochgewicht fehlt)'}</div></div>
         <div class="num">${fmt(f.per100.kcal)} <span class="small muted">kcal/100 g</span></div></button>`;
-    }).join('')}</div>` : ''}`;
+    }).join('')}</div>` : ''}
+    ${viewVorlagen()}`;
+}
+function viewVorlagen() {
+  if (!bls) { loadBLS().then(() => { if (tab === 'rezepte') render(); }).catch(() => {}); return '<p class="small muted">Vorlagen werden geladen …</p>'; }
+  const cats = [...new Set(VORLAGEN.map((t) => t.cat))];
+  return `<div class="list-title" style="margin-top:18px">Vorlagen</div>
+    <p class="small muted" style="margin:0 0 10px">Antippen, Mengen anpassen und sichern. Das Kochgewicht ist erst geschätzt – nach dem Kochen einmal den Topf wiegen.</p>
+    ${cats.map((c) => `<div class="list-title">${esc(c)}</div><div class="list">${VORLAGEN.filter((t) => t.cat === c).map((t) => {
+      const f = recipeFood(tplRecipe(t));
+      const n = calc(f.per100, f.serving);
+      return `<button class="item" data-tpl="${t.id}"><div class="grow"><div class="name">${esc(t.name)}</div>
+        <div class="sub num">${t.portions} ${t.portions === 1 ? 'Portion' : 'Portionen'} · je ${fmt(n.protein)} g Eiweiß · ${fmt((f.fv * f.serving) / 100)} g Obst & Gemüse</div></div>
+        <div class="num">${fmt(n.kcal)} <span class="small muted">kcal/Port.</span></div></button>`;
+    }).join('')}</div>`).join('')}`;
+}
+// Vorlage -> neues (noch nicht gespeichertes) Rezept. Braucht geladenen BLS.
+function tplRecipe(t) {
+  const items = [];
+  let cooked = 0, allRaw = true;
+  for (const [code, grams, cf] of t.items) {
+    const food = CUSTOM[code] ? { ...CUSTOM[code], per100: { ...CUSTOM[code].per100 } } : bls.byCode.get(code) && blsFood(bls.byCode.get(code));
+    if (!food) continue;
+    items.push({ food, grams });
+    cooked += grams * cf;
+    if (cf !== 1) allRaw = false;
+  }
+  return { id: uid(), name: t.name, items, portions: t.portions, note: t.note || '', cooked: allRaw ? null : Math.round(cooked / 10) * 10, estCooked: !allRaw };
 }
 
 function viewSettings() {
@@ -348,6 +389,7 @@ function viewSettings() {
       <label class="field"><span>Eiweiß (g)</span><input class="input num" inputmode="numeric" data-set="protein" value="${s.protein}"></label>
       <label class="field"><span>Fett (g)</span><input class="input num" inputmode="numeric" data-set="fat" value="${s.fat}"></label>
       <label class="field"><span>Kohlenhydrate (g)</span><input class="input num" inputmode="numeric" data-set="carbs" value="${s.carbs}"></label>
+      <label class="field"><span>Obst & Gemüse (g)</span><input class="input num" inputmode="numeric" data-set="fvGoal" value="${s.fvGoal || FV_GOAL}"></label>
     </div></section>
 
     <section class="card"><h2>Töpfe & Schüsseln (Leergewicht)</h2>
@@ -381,6 +423,7 @@ function bindView(v) {
   $$('[data-today]', v).forEach((b) => b.onclick = () => { currentDate = todayKey(); render(); });
   $$('[data-new-recipe]', v).forEach((b) => b.onclick = () => openRecipe(null));
   $$('[data-recipe]', v).forEach((b) => b.onclick = () => openRecipe(state.recipes.find((r) => r.id === b.dataset.recipe)));
+  $$('[data-tpl]', v).forEach((b) => b.onclick = () => openRecipe(tplRecipe(VORLAGEN.find((t) => t.id === b.dataset.tpl))));
   $$('[data-set]', v).forEach((inp) => inp.onchange = () => {
     const k = inp.dataset.set;
     state.settings[k] = k === 'apiKey' ? inp.value.trim() : (num(inp.value) || state.settings[k]);
@@ -571,7 +614,7 @@ function openAmount(food, target) {
     ${pl && pl.level === 'warn' ? `<div class="note warn">⚠︎ ${esc(pl.text)} <button class="btn" style="margin-top:8px;padding:6px 10px" id="fixBtn">Werte korrigieren</button></div>` : ''}
     ${variants.length > 1 ? `<label class="field"><span>So habe ich es gewogen</span><select class="input" id="variant">
       ${variants.map((v) => `<option value="${v.code}" ${v.code === f.code ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>` : ''}
-    ${f.src === 'recipe' ? `<div class="note">Rezept: ${fmt(f.weight)} g ${state.recipes.find((r) => r.id === f.recipeId)?.cooked ? 'gekocht' : 'roh'} insgesamt. Wiege nur deine Portion. <button class="btn" style="margin-top:8px;padding:6px 10px" id="editRecipe">Kochgewicht ändern</button></div>` : ''}
+    ${f.src === 'recipe' ? `<div class="note">Rezept: ${fmt(f.weight)} g ${(() => { const rc = state.recipes.find((r) => r.id === f.recipeId); return rc?.cooked ? (rc.estCooked ? 'gekocht (geschätzt)' : 'gekocht') : 'roh'; })()} insgesamt. Wiege nur deine Portion. <button class="btn" style="margin-top:8px;padding:6px 10px" id="editRecipe">Kochgewicht ändern</button></div>` : ''}
     <div class="amount-big"><input id="grams" class="num" inputmode="decimal" value="${fmtIn(startGrams)}" aria-label="Menge in Gramm"><span>g</span></div>
     <div class="chips" style="justify-content:center">${quick().map(([g, l]) => `<button class="chip" data-g="${g}">${l}</button>`).join('')}</div>
     <div class="preview" id="preview"></div>
@@ -963,9 +1006,10 @@ function showMealResult(el, out, dataUrl, items, target) {
 /* ---------- Rezepte ---------- */
 function openRecipe(recipe) {
   const r = recipe ? JSON.parse(JSON.stringify(recipe)) : { id: uid(), name: '', items: [], cooked: null };
-  const isNew = !recipe;
+  const isNew = !recipe || !state.recipes.some((x) => x.id === recipe.id);
   const body = `
     <label class="field"><span>Name</span><input class="input" id="rName" value="${esc(r.name)}" placeholder="z. B. Spaghetti Bolognese"></label>
+    ${r.note ? `<div class="note">${esc(r.note)}</div>` : ''}
     <div class="list-title">1 · Zutaten (roh gewogen)</div>
     <div id="rItems"></div>
     <button class="btn block" id="rAdd">+ Zutat hinzufügen</button>
@@ -974,12 +1018,13 @@ function openRecipe(recipe) {
       ${state.pots.length ? `<label class="field"><span>Topf</span><select class="input" id="rPot"><option value="">ohne Topf (direkt gewogen)</option>${state.pots.map((p) => `<option value="${p.id}">${esc(p.name)} (${fmt(p.tare)} g)</option>`).join('')}</select></label>` : '<p class="small muted" style="margin-top:0">Tipp: Unter „Mehr“ kannst du das Leergewicht deiner Töpfe speichern.</p>'}
       <label class="field"><span id="rGrossLbl">Gesamtgewicht gekocht (g)</span><input class="input num" id="rGross" inputmode="decimal" value="${r.cooked ? fmtIn(r.cooked) : ''}"></label>
       <div class="small muted" id="rCookedInfo"></div>
+      <label class="field" style="margin-top:10px"><span>Portionen (optional)</span><input class="input num" id="rPortions" inputmode="numeric" value="${r.portions || ''}"></label>
     </div>
     <div class="card" id="rSum"></div>
     ${isNew ? '' : '<button class="btn danger block" id="rDel">Rezept löschen</button>'}`;
 
   const el = pushSheet({
-    title: isNew ? 'Neues Rezept' : r.name,
+    title: isNew ? (r.name || 'Neues Rezept') : r.name,
     right: { label: 'Sichern', onClick: () => persist(true) },
     body,
     mount: () => {},
@@ -994,6 +1039,7 @@ function openRecipe(recipe) {
   }
   function refresh() {
     r.cooked = cookedWeight();
+    r.portions = num($('#rPortions', el).value) || null;
     $('#rItems', el).innerHTML = r.items.length ? `<div class="list">${r.items.map((it, i) => `<button class="item" data-ri="${i}"><div class="grow"><div class="name">${esc(it.food.name)}</div><div class="sub num">${fmt(it.grams)} g · ${srcLabel(it.food)}</div></div><div class="num">${fmt(calc(it.food.per100, it.grams).kcal)} kcal</div></button>`).join('')}</div>` : '<p class="small muted">Noch keine Zutaten.</p>';
     $$('[data-ri]', el).forEach((b) => b.onclick = () => {
       const i = Number(b.dataset.ri);
@@ -1003,11 +1049,12 @@ function openRecipe(recipe) {
     const f = recipeFood(r);
     const potId = $('#rPot', el)?.value;
     $('#rGrossLbl', el).textContent = potId ? 'Topf mit Essen (g)' : 'Gesamtgewicht gekocht (g)';
-    $('#rCookedInfo', el).textContent = r.cooked ? `Essen ohne Topf: ${fmt(r.cooked)} g · Roh waren es ${fmt(f.raw)} g (Faktor ${fmt(r.cooked / (f.raw || 1), 2)})` : 'Ohne Kochgewicht wird mit dem Rohgewicht gerechnet.';
+    $('#rCookedInfo', el).textContent = r.cooked && r.estCooked ? `Geschätzt aus typischen Kochverlusten (roh ${fmt(f.raw)} g). Nach dem Kochen wiegen und das echte Gewicht eintragen.` : r.cooked ? `Essen ohne Topf: ${fmt(r.cooked)} g · Roh waren es ${fmt(f.raw)} g (Faktor ${fmt(r.cooked / (f.raw || 1), 2)})` : 'Ohne Kochgewicht wird mit dem Rohgewicht gerechnet.';
     $('#rSum', el).innerHTML = `<h2>Ergebnis</h2><table class="nut-table">
       <tr><td>Gesamt</td><td class="num">${fmt(f.total.kcal)} kcal</td></tr>
       <tr><td>Pro 100 g ${r.cooked ? 'gekocht' : 'roh'}</td><td class="num"><b>${fmt(f.per100.kcal)} kcal</b></td></tr>
-      <tr><td>Eiweiß / Fett / KH pro 100 g</td><td class="num">${fmt(f.per100.protein, 1)} / ${fmt(f.per100.fat, 1)} / ${fmt(f.per100.carbs, 1)} g</td></tr></table>
+      <tr><td>Eiweiß / Fett / KH pro 100 g</td><td class="num">${fmt(f.per100.protein, 1)} / ${fmt(f.per100.fat, 1)} / ${fmt(f.per100.carbs, 1)} g</td></tr>
+      ${f.serving ? `<tr><td>1 Portion (${fmt(f.serving)} g)</td><td class="num"><b>${fmt(calc(f.per100, f.serving).kcal)} kcal</b> · ${fmt(calc(f.per100, f.serving).protein)} g Eiweiß</td></tr>` : ''}</table>
       ${r.items.length ? '<button class="btn primary block" style="margin-top:12px" id="rLog">Portion eintragen</button>' : ''}`;
     const lg = $('#rLog', el);
     if (lg) lg.onclick = () => { if (persist(false)) openAmount(recipeFood(r), { mode: 'log', meal: defaultMeal() }); };
@@ -1017,14 +1064,16 @@ function openRecipe(recipe) {
     if (!r.name) { toast('Bitte einen Namen eingeben'); return false; }
     if (!r.items.length) { toast('Bitte mindestens eine Zutat hinzufügen'); return false; }
     r.cooked = cookedWeight();
+    r.portions = num($('#rPortions', el).value) || null;
     const i = state.recipes.findIndex((x) => x.id === r.id);
     if (i >= 0) state.recipes[i] = r; else state.recipes.push(r);
     save();
     if (close) { popSheet(); render(); toast('Rezept gespeichert'); }
     return true;
   }
-  $('#rAdd', el).onclick = () => openAdd({ mode: 'pick', onPick: (f, g) => { r.items.push({ food: { key: f.key, src: f.src, code: f.code, ean: f.ean, name: f.name, brand: f.brand, per100: f.per100 }, grams: g }); popSheet(2); refresh(); } });
-  $('#rGross', el).oninput = refresh;
+  $('#rAdd', el).onclick = () => openAdd({ mode: 'pick', onPick: (f, g) => { r.items.push({ food: { key: f.key, src: f.src, code: f.code, fv: f.fv, ean: f.ean, name: f.name, brand: f.brand, per100: f.per100 }, grams: g }); popSheet(2); refresh(); } });
+  $('#rGross', el).oninput = () => { r.estCooked = false; refresh(); };
+  $('#rPortions', el).oninput = refresh;
   const pot = $('#rPot', el);
   if (pot) pot.onchange = refresh;
   const del = $('#rDel', el);
