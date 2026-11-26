@@ -15,9 +15,9 @@ v1.3.0 plus feste Tagesziele (3.050 kcal / 160 g Protein / 80 g Fett / 425 g KH)
 - [ ] Gefundene Fehler aus dem iPhone-Test beheben
 ### Später / Ideen
 - [ ] Gewichts-Tracking mit Wochenschnitt und kcal-Anpassung im Bulk
-- [ ] Als Modul „Gesundheit“ ins MB OS (App „mb“) einbinden
 
 ## ✔️ Erledigt
+- 24.11.2026 – Als Modul „Gesundheit → Ernährung“ in die App „mb“ übernommen (Kopie im mb-Repo unter `ernaehrung/`, Daten dort auf dem eigenen Server, Import der Export-Datei von hier). Diese iPhone-Version bleibt bestehen, bis mb vom Handy erreichbar ist.
 - 23.11.2026 – PLAN.md zu PROJEKT.md umgebaut (Ziel, Stand, Aufgaben, Entscheidungen)
 - 08.11.2026 – Feste Tagesziele 3.050 kcal / 160 / 80 / 425 g statt Rechner
 - 07.11.2026 – v1.3.0: Ziel-Rechner aus Körperdaten (Daten bleiben auf dem Gerät)
